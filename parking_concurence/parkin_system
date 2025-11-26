@@ -1,0 +1,220 @@
+#include <iostream>
+#include <thread>
+#include <mutex>
+#include <semaphore.h>
+#include <vector>
+#include <chrono>
+#include <random>
+#include <iomanip>
+#include <condition_variable>
+#include <atomic>
+
+using namespace std;
+
+// Configuration du système
+const int NB_PLACES_PARKING = 5;
+const int NB_VEHICULES = 10;
+const int DUREE_STATIONNEMENT_MAX = 3; // secondes
+
+// Classe représentant une place de parking
+class PlaceParking {
+private:
+    int id;
+    bool occupee;
+    string vehicule_id;
+    mutex mtx;
+
+public:
+    PlaceParking(int _id) : id(_id), occupee(false), vehicule_id("") {}
+
+    bool estOccupee() {
+        lock_guard<mutex> lock(mtx);
+        return occupee;
+    }
+
+    bool occuper(const string& vid) {
+        lock_guard<mutex> lock(mtx);
+        if (!occupee) {
+            occupee = true;
+            vehicule_id = vid;
+            return true;
+        }
+        return false;
+    }
+
+    void liberer() {
+        lock_guard<mutex> lock(mtx);
+        occupee = false;
+        vehicule_id = "";
+    }
+
+    int getId() const { return id; }
+    
+    string getVehiculeId() {
+        lock_guard<mutex> lock(mtx);
+        return vehicule_id;
+    }
+};
+
+// Classe gérant le parking complet
+class GestionnaireParking {
+private:
+    vector<PlaceParking*> places;
+    sem_t semaphore; // Sémaphore pour limiter l'accès concurrent
+    mutex mtx_affichage;
+    mutex mtx_stats;
+    
+    // Statistiques
+    atomic<int> nb_acces_reussis{0};
+    atomic<int> nb_acces_refuses{0};
+    atomic<int> temps_attente_total{0};
+    atomic<int> nb_tentatives{0};
+
+public:
+    GestionnaireParking() {
+        // Initialisation des places
+        for (int i = 0; i < NB_PLACES_PARKING; i++) {
+            places.push_back(new PlaceParking(i + 1));
+        }
+        
+        // Initialisation du sémaphore (max NB_PLACES_PARKING accès simultanés)
+        sem_init(&semaphore, 0, NB_PLACES_PARKING);
+    }
+
+    ~GestionnaireParking() {
+        for (auto place : places) {
+            delete place;
+        }
+        sem_destroy(&semaphore);
+    }
+
+    // Tentative d'occupation d'une place
+    PlaceParking* entrer(const string& vehicule_id) {
+        auto debut = chrono::steady_clock::now();
+        
+        // Attendre qu'une place soit disponible (section critique protégée par sémaphore)
+        sem_wait(&semaphore);
+        
+        auto fin = chrono::steady_clock::now();
+        int attente = chrono::duration_cast<chrono::milliseconds>(fin - debut).count();
+        temps_attente_total += attente;
+        nb_tentatives++;
+        
+        // Chercher une place libre
+        PlaceParking* place_trouvee = nullptr;
+        for (auto place : places) {
+            if (place->occuper(vehicule_id)) {
+                place_trouvee = place;
+                nb_acces_reussis++;
+                afficherEtat(vehicule_id + " entre en place " + to_string(place->getId()));
+                break;
+            }
+        }
+        
+        return place_trouvee;
+    }
+
+    // Libération d'une place
+    void sortir(PlaceParking* place, const string& vehicule_id) {
+        if (place != nullptr) {
+            afficherEtat(vehicule_id + " quitte la place " + to_string(place->getId()));
+            place->liberer();
+            sem_post(&semaphore); // Libérer le sémaphore
+        }
+    }
+
+    // Affichage synchronisé de l'état du parking
+    I7
+    void afficherEtat(const string& message) {
+        lock_guard<mutex> lock(mtx_affichage);
+        
+        cout << "\n[" << chrono::system_clock::to_time_t(chrono::system_clock::now()) 
+             << "] " << message << endl;
+        cout << "État du parking: ";
+        
+        for (auto place : places) {
+            if (place->estOccupee()) {
+                cout << "[" << place->getId() << ":" << place->getVehiculeId() << "] ";
+            } else {
+                cout << "[" << place->getId() << ":LIBRE] ";
+            }
+        }
+        cout << endl;
+    }
+
+    // Affichage des statistiques finales
+    void afficherStatistiques() {
+        lock_guard<mutex> lock(mtx_affichage);
+        
+        cout << "\n" << string(60, '=') << endl;
+        cout << "STATISTIQUES FINALES DU PARKING" << endl;
+        cout << string(60, '=') << endl;
+        cout << "Nombre total de tentatives: " << nb_tentatives << endl;
+        cout << "Accès réussis: " << nb_acces_reussis << endl;
+        cout << "Temps d'attente moyen: " 
+             << (nb_tentatives > 0 ? temps_attente_total / nb_tentatives : 0) 
+             << " ms" << endl;
+        cout << "Taux d'occupation moyen: " 
+             << fixed << setprecision(2)
+             << (100.0 * nb_acces_reussis / nb_tentatives) << "%" << endl;
+        cout << string(60, '=') << endl;
+    }
+};
+
+// Fonction exécutée par chaque thread véhicule
+void simulerVehicule(int id, GestionnaireParking* parking) {
+    string vehicule_id = "V" + to_string(id);
+    
+    // Générateur aléatoire pour simuler des comportements variés
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<> duree_stationnement(1, DUREE_STATIONNEMENT_MAX);
+    uniform_int_distribution<> delai_avant_arrivee(0, 2);
+    
+    // Attendre un peu avant d'arriver (simulation réaliste)
+    this_thread::sleep_for(chrono::seconds(delai_avant_arrivee(gen)));
+    
+    // Tenter d'entrer dans le parking
+    PlaceParking* ma_place = parking->entrer(vehicule_id);
+    
+    if (ma_place != nullptr) {
+        // Stationner pendant un certain temps
+        int duree = duree_stationnement(gen);
+        this_thread::sleep_for(chrono::seconds(duree));
+        
+        // Quitter le parking
+        parking->sortir(ma_place, vehicule_id);
+    }
+}
+
+int main() {
+    cout << "========================================" << endl;
+    cout << "SYSTÈME DE GESTION DE PARKING" << endl;
+    cout << "Concurrence et Synchronisation" << endl;
+    cout << "========================================" << endl;
+    cout << "Configuration:" << endl;
+    cout << "- Nombre de places: " << NB_PLACES_PARKING << endl;
+    cout << "- Nombre de véhicules: " << NB_VEHICULES << endl;
+    cout << "- Durée de stationnement max: " << DUREE_STATIONNEMENT_MAX << "s" << endl;
+    cout << "========================================\n" << endl;
+
+    // Création du gestionnaire de parking
+    GestionnaireParking parking;
+
+    // Création des threads pour simuler les véhicules
+    vector<thread> vehicules;
+    
+    for (int i = 1; i <= NB_VEHICULES; i++) {
+        vehicules.push_back(thread(simulerVehicule, i, &parking));
+    }
+
+    // Attendre que tous les véhicules aient terminé
+    for (auto& v : vehicules) {
+        v.join();
+    }
+
+    // Afficher les statistiques finales
+    parking.afficherStatistiques();
+
+    return 0;
+}
