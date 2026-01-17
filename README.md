@@ -1,0 +1,1 @@
+Ceci est un projet de système d'exploitation sur le thème modèle de concurence et de synchronisation pour l'acees aux ressources. Pour cela nous avons developper une application en C++ qui illustre le thème avec la gestion des parking comme modèle.
